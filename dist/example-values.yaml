@@ -1,0 +1,13 @@
+manager:
+  image:
+    repository: kutlay/node-maintenance-controller
+    tag: "latest"
+
+  # Controller flags — add any flag the manager binary accepts
+  args:
+    - --leader-elect # elect a leader to make sure only one controller runs
+    - --poll-interval=10m # poll maintenance api every 10 minutes
+    - --maintenance-window=30m # cordon 30m before maintenance
+    - --post-maintenance-uncordon-delay=10m # uncordon 10m after maintneance is done
+    - --linode-token-secret-name=linode-token
+    - --linode-api-endpoint=https://api.linode.com

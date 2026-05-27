@@ -1,0 +1,34 @@
+apiVersion: maintenance.linode.com/v1
+kind: NodeMaintenance
+metadata:
+  labels:
+    app.kubernetes.io/name: node-maintenance-controller
+    app.kubernetes.io/managed-by: kustomize
+  # NodeMaintenance is cluster-scoped; name matches the associated Node name.
+  name: my-lke-node-abc12
+spec:
+  # nodeName is the name of the Kubernetes Node under maintenance.
+  nodeName: my-lke-node-abc12
+
+  # linodeID is the numeric Linode instance ID from spec.providerID ("linode://<id>").
+  linodeID: 98765432
+
+  # scheduledAt is the maintenance window start time as reported by the Linode API.
+  scheduledAt: "2026-06-01T04:00:00Z"
+
+  # maintenanceType is informational (e.g. "reboot").
+  maintenanceType: reboot
+
+  # entity mirrors the Linode API entity block.
+  entity:
+    id: 98765432
+    label: my-lke-node-abc12
+    type: linode
+    url: /v4/linode/instances/98765432
+
+  # wasSchedulable records whether the Node was schedulable at creation time.
+  # The controller uses this to decide whether to uncordon after maintenance ends.
+  wasSchedulable: true
+
+  # maintenanceWindow overrides the global look-ahead duration for this object.
+  maintenanceWindow: 24h
