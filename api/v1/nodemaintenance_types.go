@@ -96,6 +96,31 @@ type NodeMaintenanceSpec struct {
 	MaintenanceWindow *metav1.Duration `json:"maintenanceWindow,omitempty"`
 }
 
+// DrainStatus tracks the progress of node drain operations during a maintenance window.
+// It is only populated when the controller is configured with --drain-nodes.
+type DrainStatus struct {
+	// StartedAt is the time the first drain attempt began.
+	// +optional
+	StartedAt *metav1.Time `json:"startedAt,omitempty"`
+
+	// LastAttemptAt is the time the most recent drain attempt started.
+	// +optional
+	LastAttemptAt *metav1.Time `json:"lastAttemptAt,omitempty"`
+
+	// Succeeded is true when a drain attempt completed without error.
+	// +optional
+	Succeeded bool `json:"succeeded,omitempty"`
+
+	// Attempts is the total number of drain attempts made so far.
+	// +optional
+	Attempts int `json:"attempts,omitempty"`
+
+	// LastError is the error message from the most recent failed attempt.
+	// Empty when drain has not been attempted or has succeeded.
+	// +optional
+	LastError string `json:"lastError,omitempty"`
+}
+
 // NodeMaintenanceStatus defines the observed state of NodeMaintenance.
 type NodeMaintenanceStatus struct {
 	// Phase is the current lifecycle phase of this maintenance.
@@ -127,6 +152,11 @@ type NodeMaintenanceStatus struct {
 	// +listType=map
 	// +listMapKey=type
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// Drain tracks the progress of node drain operations.
+	// Only populated when the controller is configured with --drain-nodes.
+	// +optional
+	Drain *DrainStatus `json:"drain,omitempty"`
 }
 
 // +kubebuilder:object:root=true

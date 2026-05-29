@@ -190,6 +190,34 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              drain:
+                description: |-
+                  Drain tracks the progress of node drain operations.
+                  Only populated when the controller is configured with --drain-nodes.
+                properties:
+                  attempts:
+                    description: Attempts is the total number of drain attempts made
+                      so far.
+                    type: integer
+                  lastAttemptAt:
+                    description: LastAttemptAt is the time the most recent drain attempt
+                      started.
+                    format: date-time
+                    type: string
+                  lastError:
+                    description: |-
+                      LastError is the error message from the most recent failed attempt.
+                      Empty when drain has not been attempted or has succeeded.
+                    type: string
+                  startedAt:
+                    description: StartedAt is the time the first drain attempt began.
+                    format: date-time
+                    type: string
+                  succeeded:
+                    description: Succeeded is true when a drain attempt completed
+                      without error.
+                    type: boolean
+                type: object
               lastSyncTime:
                 description: |-
                   LastSyncTime is the last time the poller successfully synced this object

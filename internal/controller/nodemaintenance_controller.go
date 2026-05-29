@@ -22,11 +22,15 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/tools/events"
+	"k8s.io/kubectl/pkg/drain"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -52,19 +56,59 @@ const (
 
 	// conditionReasonScheduled is the reason string for the maintenance condition.
 	conditionReasonScheduled = "LinodeMaintenanceScheduled"
+
+	// Event reasons
+	eventReasonDrainFailed    = "DrainFailed"
+	eventReasonDrainSucceeded = "DrainSucceeded"
+	eventReasonDrainExhausted = "DrainExhausted"
+
+	// Event actions
+	eventActionDrain = "DrainNode"
 )
 
 // NodeMaintenanceReconciler reconciles NodeMaintenance objects.
 // It watches for changes driven by the LinodeMaintenancePoller and applies or
 // removes three signals (condition, label, taint) on the associated Node.
+// Optionally it also cordons and drains the node.
 type NodeMaintenanceReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme   *runtime.Scheme
+	Recorder events.EventRecorder
+
+	// KubeClientset is the typed Kubernetes client used by the drain helper.
+	// Must be set when DrainNodes is true.
+	KubeClientset kubernetes.Interface
 
 	// UncordonDelay is the duration the reconciler waits after maintenance
 	// completes (i.e. after the poller sets phase=Completed) before uncordoning
 	// the node. A zero value means uncordon immediately.
 	UncordonDelay time.Duration
+
+	// CordonNodes controls whether the Node is cordoned (spec.unschedulable=true)
+	// when maintenance signals are applied. Independent of DrainNodes.
+	CordonNodes bool
+
+	// DrainNodes controls whether the Node is drained after being cordoned.
+	// Enabling this always implies cordoning regardless of CordonNodes.
+	DrainNodes bool
+
+	// DrainTimeout is the per-attempt timeout passed to the kubectl drain helper.
+	DrainTimeout time.Duration
+
+	// DrainMaxRetries is the maximum number of drain attempts before giving up.
+	// 0 means unlimited retries.
+	DrainMaxRetries int
+
+	// DrainIgnoreDaemonSets controls whether DaemonSet-owned pods are skipped
+	// during drain. Should almost always be true.
+	DrainIgnoreDaemonSets bool
+
+	// DrainDeleteEmptyDirData controls whether pods with emptyDir volumes are
+	// evicted during drain. Defaults to false to avoid data loss.
+	DrainDeleteEmptyDirData bool
+
+	// DrainRetryInterval is the duration to wait between failed drain attempts.
+	DrainRetryInterval time.Duration
 }
 
 // +kubebuilder:rbac:groups=maintenance.linode.com,resources=nodemaintenances,verbs=get;list;watch;create;update;patch;delete
@@ -74,6 +118,9 @@ type NodeMaintenanceReconciler struct {
 // +kubebuilder:rbac:groups="",resources=nodes/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=pods/eviction,verbs=create
+// +kubebuilder:rbac:groups=apps,resources=daemonsets,verbs=get;list;watch
 
 // Reconcile reads the NodeMaintenance object identified by req and reconciles
 // the associated Kubernetes Node to match the desired state.
@@ -107,7 +154,8 @@ func (r *NodeMaintenanceReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	}
 }
 
-// reconcileActive ensures the three maintenance signals are present on the Node.
+// reconcileActive ensures the three maintenance signals are present on the Node,
+// optionally cordons the node, and optionally drains it with retry logic.
 func (r *NodeMaintenanceReconciler) reconcileActive(
 	ctx context.Context,
 	nm *maintenancev1.NodeMaintenance,
@@ -124,13 +172,88 @@ func (r *NodeMaintenanceReconciler) reconcileActive(
 		return ctrl.Result{}, err
 	}
 
-	// Update status flags so observers can confirm signals are in place.
-	patch := client.MergeFrom(nm.DeepCopy())
+	// Cordon the node if requested by either flag.
+	// DrainNodes implies cordon because draining an uncordoned node would allow
+	// new pods to be scheduled onto it between evictions.
+	if r.CordonNodes || r.DrainNodes {
+		if err := r.cordonNode(ctx, node.Name); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
+	// Capture the baseline for the status patch (includes all further mutations).
+	statusPatch := client.MergeFrom(nm.DeepCopy())
 	nm.Status.NodeLabelApplied = true
 	nm.Status.NodeTaintApplied = true
 	nm.Status.NodeConditionApplied = true
-	if err := r.Status().Patch(ctx, nm, patch); err != nil {
-		return ctrl.Result{}, fmt.Errorf("updating NodeMaintenance status flags: %w", err)
+
+	if !r.DrainNodes {
+		if err := r.Status().Patch(ctx, nm, statusPatch); err != nil {
+			return ctrl.Result{}, fmt.Errorf("updating NodeMaintenance status: %w", err)
+		}
+		return ctrl.Result{}, nil
+	}
+
+	// ---- Drain logic ----
+
+	// Nothing left to do if drain already succeeded.
+	if nm.Status.Drain != nil && nm.Status.Drain.Succeeded {
+		if err := r.Status().Patch(ctx, nm, statusPatch); err != nil {
+			return ctrl.Result{}, fmt.Errorf("updating NodeMaintenance status: %w", err)
+		}
+		return ctrl.Result{}, nil
+	}
+
+	// Stop retrying once the configured limit is reached.
+	if r.DrainMaxRetries > 0 && nm.Status.Drain != nil && nm.Status.Drain.Attempts >= r.DrainMaxRetries {
+		log.Info("Drain max retries reached; node remains cordoned",
+			"node", node.Name, "attempts", nm.Status.Drain.Attempts, "maxRetries", r.DrainMaxRetries)
+		r.Recorder.Eventf(nm, node, corev1.EventTypeWarning, eventReasonDrainExhausted, eventActionDrain,
+			"Max drain retries (%d) exhausted for node %s: %s",
+			r.DrainMaxRetries, node.Name, nm.Status.Drain.LastError)
+		if err := r.Status().Patch(ctx, nm, statusPatch); err != nil {
+			return ctrl.Result{}, fmt.Errorf("updating NodeMaintenance status: %w", err)
+		}
+		return ctrl.Result{}, nil
+	}
+
+	// Initialise drain status on first attempt.
+	now := metav1.Now()
+	if nm.Status.Drain == nil {
+		nm.Status.Drain = &maintenancev1.DrainStatus{
+			StartedAt: &now,
+		}
+	}
+	nm.Status.Drain.Attempts++
+	nm.Status.Drain.LastAttemptAt = &now
+
+	log.Info("Draining Node", "node", node.Name, "attempt", nm.Status.Drain.Attempts,
+		"timeout", r.DrainTimeout, "maxRetries", r.DrainMaxRetries)
+
+	drainErr := r.drainNode(ctx, node.Name)
+
+	if drainErr != nil {
+		nm.Status.Drain.LastError = drainErr.Error()
+		log.Info("Drain attempt failed; will retry",
+			"node", node.Name, "attempt", nm.Status.Drain.Attempts,
+			"error", drainErr, "retryIn", r.DrainRetryInterval)
+		r.Recorder.Eventf(nm, node, corev1.EventTypeWarning, eventReasonDrainFailed, eventActionDrain,
+			"Drain attempt %d for node %s failed: %s (retry in %s)",
+			nm.Status.Drain.Attempts, node.Name, drainErr.Error(), r.DrainRetryInterval)
+		if err := r.Status().Patch(ctx, nm, statusPatch); err != nil {
+			return ctrl.Result{}, fmt.Errorf("updating NodeMaintenance drain status: %w", err)
+		}
+		return ctrl.Result{RequeueAfter: r.DrainRetryInterval}, nil
+	}
+
+	nm.Status.Drain.Succeeded = true
+	nm.Status.Drain.LastError = ""
+	log.Info("Node drain succeeded", "node", node.Name, "attempts", nm.Status.Drain.Attempts)
+	r.Recorder.Eventf(nm, node, corev1.EventTypeNormal, eventReasonDrainSucceeded, eventActionDrain,
+		"Node %s drained successfully after %d attempt(s)", node.Name, nm.Status.Drain.Attempts)
+
+	if err := r.Status().Patch(ctx, nm, statusPatch); err != nil {
+		return ctrl.Result{}, fmt.Errorf("updating NodeMaintenance drain status: %w", err)
 	}
 	return ctrl.Result{}, nil
 }
@@ -165,6 +288,8 @@ func (r *NodeMaintenanceReconciler) reconcileCompleted(
 	}
 
 	// Uncordon the node only if it was schedulable before maintenance started.
+	// This preserves the pre-maintenance state for nodes that were already
+	// cordoned by an external actor before our controller observed them.
 	if nm.Spec.WasSchedulable {
 		current := &corev1.Node{}
 		if err := r.Get(ctx, types.NamespacedName{Name: nm.Spec.NodeName}, current); err != nil {
@@ -187,6 +312,66 @@ func (r *NodeMaintenanceReconciler) reconcileCompleted(
 	}
 	log.Info("Deleted NodeMaintenance after maintenance completion", "node", nm.Spec.NodeName)
 	return ctrl.Result{}, nil
+}
+
+// cordonNode marks the Node as unschedulable (spec.unschedulable=true) if it
+// is not already cordoned.
+func (r *NodeMaintenanceReconciler) cordonNode(ctx context.Context, nodeName string) error {
+	log := logf.FromContext(ctx)
+
+	node := &corev1.Node{}
+	if err := r.Get(ctx, types.NamespacedName{Name: nodeName}, node); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	if node.Spec.Unschedulable {
+		return nil // already cordoned; nothing to do
+	}
+	patch := client.MergeFrom(node.DeepCopy())
+	node.Spec.Unschedulable = true
+	if err := r.Patch(ctx, node, patch); err != nil {
+		return fmt.Errorf("cordoning Node %s: %w", nodeName, err)
+	}
+	log.Info("Cordoned Node", "node", nodeName)
+	return nil
+}
+
+// drainNode evicts all evictable pods from the node using the kubectl drain
+// helper. The call blocks for up to DrainTimeout waiting for pods to terminate.
+func (r *NodeMaintenanceReconciler) drainNode(ctx context.Context, nodeName string) error {
+	log := logf.FromContext(ctx)
+	helper := &drain.Helper{
+		Ctx:                 ctx,
+		Client:              r.KubeClientset,
+		Force:               false,
+		GracePeriodSeconds:  -1, // honour each pod's own terminationGracePeriodSeconds
+		IgnoreAllDaemonSets: r.DrainIgnoreDaemonSets,
+		DeleteEmptyDirData:  r.DrainDeleteEmptyDirData,
+		Timeout:             r.DrainTimeout,
+		Out:                 &drainLogger{log: log, isErr: false},
+		ErrOut:              &drainLogger{log: log, isErr: true},
+	}
+	return drain.RunNodeDrain(helper, nodeName)
+}
+
+// drainLogger is an io.Writer that routes kubectl drain output to the
+// controller's structured logger so all drain progress is visible via
+// the manager's log stream.
+type drainLogger struct {
+	log   logr.Logger
+	isErr bool
+}
+
+func (l *drainLogger) Write(p []byte) (int, error) {
+	msg := strings.TrimSpace(string(p))
+	if msg == "" {
+		return len(p), nil
+	}
+	if l.isErr {
+		l.log.Error(nil, "[drain] "+msg)
+	} else {
+		l.log.Info("[drain] " + msg)
+	}
+	return len(p), nil
 }
 
 // syncNodeLabelsAndTaint applies (apply=true) or removes (apply=false) the
