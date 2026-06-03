@@ -28,6 +28,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
@@ -109,6 +110,31 @@ func main() {
 		"Look-ahead duration: nodes with maintenance scheduled within this window receive signals (e.g. 24h, 48h).")
 	flag.DurationVar(&uncordonDelay, "post-maintenance-uncordon-delay", 0,
 		"Duration to wait after maintenance completes before uncordoning the node (e.g. 5m). 0 means immediate.")
+
+	// --- Cordon / drain flags ---
+	var cordonNodes bool
+	var drainNodes bool
+	var drainTimeout time.Duration
+	var drainMaxRetries int
+	var drainIgnoreDaemonSets bool
+	var drainDeleteEmptyDirData bool
+	var drainRetryInterval time.Duration
+	flag.BoolVar(&cordonNodes, "cordon-nodes", false,
+		"If true, cordon nodes (spec.unschedulable=true) when maintenance signals are applied. "+
+			"Does not drain. Independent of --drain-nodes.")
+	flag.BoolVar(&drainNodes, "drain-nodes", false,
+		"If true, drain nodes before maintenance. Implies --cordon-nodes.")
+	flag.DurationVar(&drainTimeout, "drain-timeout", 5*time.Minute,
+		"Per-attempt timeout for the kubectl drain operation (e.g. 5m, 10m).")
+	flag.IntVar(&drainMaxRetries, "drain-max-retries", 5,
+		"Maximum number of drain attempts before giving up. 0 means unlimited retries.")
+	flag.BoolVar(&drainIgnoreDaemonSets, "drain-ignore-daemonsets", true,
+		"If true, DaemonSet-owned pods are ignored during drain.")
+	flag.BoolVar(&drainDeleteEmptyDirData, "drain-delete-emptydir-data", false,
+		"If true, pods with emptyDir volumes are evicted during drain. "+
+			"Defaults to false to avoid data loss.")
+	flag.DurationVar(&drainRetryInterval, "drain-retry-interval", 1*time.Minute,
+		"Duration to wait between failed drain attempts (e.g. 30s, 1m).")
 
 	opts := zap.Options{
 		Development: true,
@@ -220,10 +246,25 @@ func main() {
 		os.Exit(1)
 	}
 
+	kubeClientset, err := kubernetes.NewForConfig(mgr.GetConfig())
+	if err != nil {
+		setupLog.Error(err, "Failed to create Kubernetes clientset")
+		os.Exit(1)
+	}
+
 	if err := (&controller.NodeMaintenanceReconciler{
-		Client:        mgr.GetClient(),
-		Scheme:        mgr.GetScheme(),
-		UncordonDelay: uncordonDelay,
+		Client:                  mgr.GetClient(),
+		Scheme:                  mgr.GetScheme(),
+		Recorder:                mgr.GetEventRecorder("node-maintenance-controller"),
+		KubeClientset:           kubeClientset,
+		UncordonDelay:           uncordonDelay,
+		CordonNodes:             cordonNodes,
+		DrainNodes:              drainNodes,
+		DrainTimeout:            drainTimeout,
+		DrainMaxRetries:         drainMaxRetries,
+		DrainIgnoreDaemonSets:   drainIgnoreDaemonSets,
+		DrainDeleteEmptyDirData: drainDeleteEmptyDirData,
+		DrainRetryInterval:      drainRetryInterval,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "nodemaintenance")
 		os.Exit(1)
