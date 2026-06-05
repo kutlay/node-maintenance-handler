@@ -58,7 +58,6 @@ type Config struct {
 	MaintenanceWindow time.Duration
 
 	// APIEndpoint overrides the Linode API base URL when non-empty
-	// (e.g. "https://api.devcloud.linode.com").
 	APIEndpoint string
 }
 

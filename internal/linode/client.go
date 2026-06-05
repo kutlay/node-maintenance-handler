@@ -51,8 +51,8 @@ type Maintenance struct {
 }
 
 // hostOverrideTransport rewrites the scheme and host of every outbound request
-// so that Linode API calls are routed to a non-default endpoint (e.g.
-// api.devcloud.linode.com) without touching linodego's internal resty state.
+// so that Linode API calls are routed to a non-default endpoint without touching
+// linodego's internal resty state.
 type hostOverrideTransport struct {
 	base   http.RoundTripper
 	scheme string
@@ -75,8 +75,7 @@ type Client struct {
 
 // NewClient creates a Linode API client authenticated with token.
 // If baseURL is non-empty it overrides the default API endpoint
-// (e.g. "https://api.devcloud.linode.com"). The override is applied at the
-// HTTP transport layer to avoid calling linodego's SetBaseURL on a value copy.
+// The override is applied at the HTTP transport layer to avoid calling linodego's SetBaseURL on a value copy.
 func NewClient(token, baseURL string) *Client {
 	ts := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: token})
 	var transport http.RoundTripper = &oauth2.Transport{Source: ts}
