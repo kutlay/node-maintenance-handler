@@ -97,8 +97,7 @@ func main() {
 	flag.StringVar(&linodeTokenSecretKey, "linode-token-secret-key", "token",
 		"Key within the Linode token Secret that holds the token value.")
 	flag.StringVar(&linodeAPIEndpoint, "linode-api-endpoint", "",
-		"Linode API base URL. Defaults to the linodego default (https://api.linode.com). "+
-			"Override for non-production environments (e.g. https://api.devcloud.linode.com).")
+		"Linode API base URL. Defaults to the linodego default (https://api.linode.com).")
 
 	// --- Poller configuration flags ---
 	var pollInterval time.Duration
