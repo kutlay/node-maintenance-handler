@@ -46,8 +46,8 @@ Edit the `args` section of the `Deployment` in `config/manager/manager.yaml`:
 args:
   - --leader-elect
   - --poll-interval=5m
-  - --maintenance-window=48h
-  - --post-maintenance-uncordon-delay=2m
+  - --maintenance-window=30m
+  - --post-maintenance-uncordon-delay=5m
 ```
 
 Then rebuild:

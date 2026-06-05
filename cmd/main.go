@@ -105,9 +105,9 @@ func main() {
 	var uncordonDelay time.Duration
 	flag.DurationVar(&pollInterval, "poll-interval", 10*time.Minute,
 		"How often the Linode maintenance API is polled (e.g. 10m, 5m).")
-	flag.DurationVar(&maintenanceWindow, "maintenance-window", 24*time.Hour,
-		"Look-ahead duration: nodes with maintenance scheduled within this window receive signals (e.g. 24h, 48h).")
-	flag.DurationVar(&uncordonDelay, "post-maintenance-uncordon-delay", 0,
+	flag.DurationVar(&maintenanceWindow, "maintenance-window", 30*time.Minute,
+		"Look-ahead duration: nodes with maintenance scheduled within this window receive signals (e.g. 30m, 24h).")
+	flag.DurationVar(&uncordonDelay, "post-maintenance-uncordon-delay", 5*time.Minute,
 		"Duration to wait after maintenance completes before uncordoning the node (e.g. 5m). 0 means immediate.")
 
 	// --- Cordon / drain flags ---

@@ -75,7 +75,7 @@ The controller's behaviour is controlled entirely through command-line flags. Ke
 |---|---|
 | Linode API credentials | `--linode-token-secret-name`, `--linode-token-secret-namespace` |
 | Poll frequency | `--poll-interval` (default: `10m`) |
-| How far ahead to act | `--maintenance-window` (default: `24h`) |
+| How far ahead to act | `--maintenance-window` (default: `30m`) |
 | Cordon nodes | `--cordon-nodes` |
 | Drain nodes | `--drain-nodes`, `--drain-timeout`, `--drain-max-retries`, `--drain-retry-interval` |
 | Post-maintenance delay | `--post-maintenance-uncordon-delay` |
@@ -101,7 +101,7 @@ helm install node-maintenance-controller dist/chart/ \
   --namespace node-maintenance-controller-system \
   --create-namespace \
   --set manager.args[0]="--poll-interval=10m" \
-  --set manager.args[1]="--maintenance-window=24h" \
+  --set manager.args[1]="--maintenance-window=30m" \
   --set manager.args[2]="--cordon-nodes"
 
 kubectl create secret generic linode-token \
