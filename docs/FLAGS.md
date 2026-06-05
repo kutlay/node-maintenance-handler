@@ -14,7 +14,7 @@
 | Flag | Default | Purpose |
 |---|---|---|
 | `--poll-interval` | `10m` | How often the Linode maintenance API is queried. |
-| `--maintenance-window` | `24h` | Look-ahead duration. Nodes with maintenance scheduled within this window receive signals (label, taint, condition). |
+| `--maintenance-window` | `30m` | Look-ahead duration. Nodes with maintenance scheduled within this window receive signals (label, taint, condition). |
 
 ### Node Signals & Lifecycle
 
@@ -22,7 +22,7 @@
 |---|---|---|
 | `--cordon-nodes` | `false` | Cordon nodes (`spec.unschedulable=true`) when maintenance signals are applied. Does not drain. Independent of `--drain-nodes`. |
 | `--drain-nodes` | `false` | Drain nodes after cordoning. Implies `--cordon-nodes`. |
-| `--post-maintenance-uncordon-delay` | `0` | Duration to wait after maintenance completes before uncordoning and cleaning up (e.g. `5m`). `0` means immediate. |
+| `--post-maintenance-uncordon-delay` | `5m` | Duration to wait after maintenance completes before uncordoning and cleaning up (e.g. `5m`). `0` means immediate. |
 
 ### Drain Behaviour
 
